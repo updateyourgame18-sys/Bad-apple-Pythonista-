@@ -1,0 +1,140 @@
+import ui
+import os
+import re
+import time
+import threading
+import sound
+
+FRAME_DIR = os.path.expanduser('~/Documents/badapple_frames/frames')
+AUDIO_PATH = os.path.expanduser('~/Documents/badapple_frames/bad_apple.mp3')
+
+TARGET_FPS = 30
+FRAME_TIME = 1.0 / TARGET_FPS
+
+
+# ───────────────────────────────
+# FAST FRAME LOADING (NO PIL)
+# ───────────────────────────────
+def get_sorted_frames():
+    pattern = re.compile(r'output_(\d+)\.jpg')
+    files = []
+
+    for f in os.listdir(FRAME_DIR):
+        m = pattern.match(f)
+        if m:
+            files.append((int(m.group(1)), f))
+
+    files.sort(key=lambda x: x[0])
+    return [os.path.join(FRAME_DIR, f) for _, f in files]
+
+
+def load_frames_fast():
+    paths = get_sorted_frames()
+    print(f"📀 Frames found: {len(paths)}")
+
+    frames = []
+
+    # KEY OPTIMIZATION: direct UI.Image load
+    for i, p in enumerate(paths):
+        frames.append(ui.Image.named(p))
+
+        if i % 500 == 0 and i > 0:
+            print(f"Loaded {i}/{len(paths)}")
+
+    print("✅ Frame preload complete")
+    return frames
+
+
+# ───────────────────────────────
+# PLAYER
+# ───────────────────────────────
+class BadApplePlayer(ui.View):
+    def __init__(self, frames):
+        self.frames = frames
+        self.index = 0
+        self.playing = False
+
+        self.background_color = 'black'
+
+        # Image view (ONLY ONE UI element updated per frame)
+        self.img = ui.ImageView(frame=self.bounds, flex='WH')
+        self.img.content_mode = ui.CONTENT_SCALE_ASPECT_FIT
+        self.add_subview(self.img)
+
+        # FPS label
+        self.label = ui.Label(frame=(10, 10, 150, 30))
+        self.label.text_color = 'white'
+        self.label.background_color = (0, 0, 0, 0.5)
+        self.label.font = ('Menlo', 12)
+        self.add_subview(self.label)
+
+        # Sound
+        self.audio = None
+        if os.path.exists(AUDIO_PATH):
+            try:
+                self.audio = sound.Player(AUDIO_PATH)
+                self.audio.volume = 1.0
+                print("🎵 Audio loaded")
+            except Exception as e:
+                print("Audio error:", e)
+
+    # ───────────────────────────
+    # PLAYBACK LOOP (SYNC CORE)
+    # ───────────────────────────
+    def play(self):
+        self.playing = True
+        total = len(self.frames)
+
+        start = time.perf_counter()
+
+        if self.audio:
+            self.audio.play()
+
+        print("▶️ Starting playback")
+
+        while self.playing and self.index < total:
+
+            # 🎯 exact frame timing
+            target = start + self.index * FRAME_TIME
+            now = time.perf_counter()
+
+            delay = target - now
+            if delay > 0:
+                time.sleep(delay)
+
+            # ⚡ update frame (no conversion)
+            self.img.image = self.frames[self.index]
+
+            self.index += 1
+
+            # FPS display every ~30 frames
+            if self.index % 30 == 0:
+                elapsed = time.perf_counter() - start
+                fps = self.index / max(elapsed, 0.001)
+                self.label.text = f"{fps:.1f} fps"
+
+        print("✅ Done")
+
+        if self.audio:
+            self.audio.stop()
+
+    def will_close(self):
+        self.playing = False
+        if self.audio:
+            self.audio.stop()
+
+
+# ───────────────────────────────
+# RUN
+# ───────────────────────────────
+if __name__ == '__main__':
+    if not os.path.exists(FRAME_DIR):
+        print("Missing frames folder")
+    else:
+        frames = load_frames_fast()
+
+        player = BadApplePlayer(frames)
+        player.present('fullscreen')
+
+        # run playback off UI thread
+        threading.Thread(target=player.play, daemon=True).start()
